@@ -1,0 +1,800 @@
+
+Analysis of reviews 
+on amazon of electronic products.
+				
+
+Proposal
+
+This project proposal is to analyze the reviews of electronics products on amazon to get better understanding of products available under electronics category of amazon. By analyzing the reviews various insights could be found like –
+Number of Verified and non-verified purchases of product.
+Average rating of each product.
+Find user who reviewed the product.
+Reviews per year.
+Most reviewed products.
+Records in each ratings.
+Find maximum and minimum rating verified product.
+Total count of reviews.
+Reviews per productID.
+Count of reviews on daily basis for all products.
+Total number of products per rating.
+
+To get this insights, mapreduce in mongodb, hadoop, hive, pig, tableau is implemented on amazon review data of electronics products.
+The data set for this analysis is taken from amazon product reviews data(s3)
+          https://s3.amazonaws.com/amazon-reviews-pds/tsv/amazon_reviews_us_Electronics_v1_00.tsv.gz		
+	 
+
+Features of Dataset
+
+Data format:
+Tab ('\t') is the separator in the file, without quote or escape characters. First line in file is header and each line after that corresponds to 1 record.
+ Columns :
+1.      marketplace 	 - 2 letter country code; here US as this data is from United States.
+2.     customer_id         - arbitrary identifier that can be used to group reviews by a single author
+3.     review_id              - ID of review
+4.     product_id.     	  - The unique Product ID the review pertains to.
+5.     product_parent     -  Random identifier that can be used to aggregate reviews for same product.
+6.     product_title.     	  - Title of the product.
+7.     Product_category. - Broad product category. ie. Electronics.
+8.     star_rating.           -  Rating of the review (1-5 star).
+9.     helpful_votes.    	  -  Number of helpful reviews.
+10.  total_votes.        	  -  Total number of reviews receviewd by the product.
+11.  Vine                        - Review was written as part of the Vine program.
+12.  verified_purchase.  - The review is on a verified purchase.
+13.  review_headline.	   -  The title of the review.
+14.  review_body.          - The review text.
+15.  review_date.           - The date the review was written.
+ 
+
+MpaReduce in MongoDB
+Number of Verified and non-verified purchases of product.
+
+CODE :
+mongoimport --db amazonreviewdata --collection reviews --type tsv --headerline --file '/Users/poojayendhe/Downloads/amazon_reviews_us_Electronics_v1_00.tsv';
+
+
+In MongoDB environment:
+
+map1 = function () { emit(this.verified_purchase, this.product_id); }
+
+reduce1 = function(key,value){
+var cnt = 0;
+for(var i = 0 ; i<value.length ; i++) {
+cnt ++;
+}
+return cnt;
+}
+
+db.reviews.mapReduce(map1, reduce1, {out : “CountOfVerfiedPurchases”})
+
+----------------------
+
+MapReduce in Hadoop
+
+Average rating of each product. 
+
+Custom Writable: CountAverageTuple.java
+
+import org.apache.hadoop.io.Writable;
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
+
+public class CountAverageTuple implements Writable {
+    private Long count;
+    private Float average;
+    public CountAverageTuple(){
+
+    }
+    public CountAverageTuple(Long count, Float average) {
+        this.count = count;
+        this.average = average;
+    }
+
+    public void write(DataOutput d) throws IOException {
+        d.writeLong(count);
+        d.writeFloat(average);
+    }
+    public void readFields(DataInput di) throws IOException {
+        count = di.readLong();
+        average = di.readFloat(); }
+
+    public Long getCount() {
+        return count;
+    }
+
+    public void setCount(Long count) {
+        this.count = count;
+    }
+
+    public Float getAverage() {
+        return average;
+    }
+
+    public void setAverage(Float average) {
+        this.average = average;
+    }
+
+    @Override
+    public String toString() {
+        return (new StringBuilder().append(count).append("\t").append(average).toString());
+    }
+}
+
+Driver Class: CountDriver.java
+
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.io.Text;
+import java.io.IOException;
+
+
+public class CountDriver {
+
+    public static void main(String[] args) throws IOException, ClassNotFoundException, InterruptedException
+    {
+        try {
+            Job job = Job.getInstance();
+            job.setJarByClass(CountDriver.class);
+
+            FileInputFormat.addInputPath(job, new Path(args[0]));
+            FileOutputFormat.setOutputPath(job, new Path(args[1]));
+
+            job.setMapperClass(CountMapperClass.class);
+            job.setReducerClass(CountReducerClass.class);
+            job.setCombinerClass(CountReducerClass.class);
+
+            job.setMapOutputKeyClass(Text.class);
+            job.setMapOutputValueClass(CountAverageTuple.class);
+
+            job.setNumReduceTasks(1);
+
+            job.setOutputKeyClass(Text.class);
+            job.setOutputValueClass(CountAverageTuple.class);
+
+            job.waitForCompletion(true);
+
+        } catch (Exception e) {
+            System.out.println("Something went wrong in main class: ");
+            e.printStackTrace();
+        }
+    }
+}
+
+
+Mapper Class: CountMapperClass.java
+
+import java.io.*;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.mapreduce.Mapper;
+
+public class CountMapperClass extends Mapper<LongWritable, Text, Text, CountAverageTuple> {
+
+    private CountAverageTuple outCountAverage = new CountAverageTuple();
+    private Text id = new Text();
+
+    public void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException  {
+
+        try {
+
+            String input[] = value.toString().split("\\t");
+            String productId = input[3].trim();
+
+            if (!productId.isEmpty()) {
+                id.set((productId));
+                outCountAverage.setCount(Long.valueOf(1));
+                outCountAverage.setAverage(Float.valueOf(input[7].trim()));
+                context.write(id, outCountAverage);
+            }
+
+        } catch (Exception e) {
+            System.out.println("Something went wrong in Mapper Task: ");
+            e.printStackTrace();
+        }
+
+    }
+}
+
+
+Reducer Class: CountReducerClass.java
+
+import java.io.IOException;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Reducer;
+
+public class CountReducerClass extends Reducer<Text, CountAverageTuple, Text, CountAverageTuple> {
+
+    private CountAverageTuple result = new CountAverageTuple();
+
+    public void reduce(Text key, Iterable<CountAverageTuple> value, Context context)
+            throws IOException, InterruptedException {
+
+        try {
+            long count = 0;
+            float sum = 0;
+
+            for (CountAverageTuple val: value) {
+                count += val.getCount();
+                sum += val.getCount() * val.getAverage();
+            }
+
+            result.setCount(count);
+            result.setAverage(sum/count);
+            context.write(key, result);
+
+        } catch (Exception e) {
+            System.out.println("Something went wrong in Reducer Task: ");
+            e.printStackTrace();
+        }
+    }
+
+}
+
+
+--------------------------------------------
+Find user who reviewed the product. 
+
+
+Driver Class: DriverClass.java
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+import java.io.IOException;
+
+public class DriverClass {
+    public static void main(String[] args) throws IOException {
+        Configuration conf = new Configuration();
+        FileSystem fs = FileSystem.get(conf);
+        try {
+            Job invertedIndexJob = Job.getInstance(conf, "find User");
+            invertedIndexJob.setJarByClass(DriverClass.class);
+            invertedIndexJob.setMapperClass(MapperClass.class);
+            invertedIndexJob.setReducerClass(ReducerClass.class);
+
+            invertedIndexJob.setInputFormatClass(TextInputFormat.class);
+
+            invertedIndexJob.setOutputFormatClass(TextOutputFormat.class);
+            invertedIndexJob.setMapOutputKeyClass(Text.class);
+            invertedIndexJob.setMapOutputValueClass(Text.class);
+            invertedIndexJob.setOutputKeyClass(Text.class);
+            invertedIndexJob.setOutputValueClass(Text.class);
+            FileInputFormat.addInputPath(invertedIndexJob, new
+                    Path(args[0]));
+            FileOutputFormat.setOutputPath(invertedIndexJob, new
+                    Path(args[1]));
+            if (fs.exists(new Path(args[1]))) {
+                fs.delete(new Path(args[1]), true);
+            }
+            invertedIndexJob.waitForCompletion(true);
+        } catch (Exception e) {
+            System.out.println("Exception in main class: ");
+            e.printStackTrace();
+        }
+    }
+}
+
+Mapper Class: MapperClass.java
+
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Mapper;
+import java.io.IOException;
+public class MapperClass extends Mapper<LongWritable, Text, Text, Text> {
+    Text prod_cat = new Text();
+    private Text productId = new Text();
+    private Text userId = new Text();
+    @Override
+    protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException
+    {
+        if(key.get()==0){
+            return;
+        }
+        try{
+            String[] tokens = value.toString().split("\\t");
+            userId.set(tokens[1]);
+            productId.set(tokens[3]);
+            context.write(productId, userId);
+        } catch(Exception e){
+            System.out.println("Exception in Mapper Task:");
+                    e.printStackTrace();
+        }
+    }
+}
+
+Reducer Class: ReducerClass.java
+
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Reducer;
+import java.io.IOException;
+public class ReducerClass extends Reducer<Text, Text, Text, Text> {
+    private Text result = new Text();
+    @Override
+    public void reduce(Text key, Iterable<Text> values, Context
+            context)
+            throws IOException, InterruptedException {
+        try {
+            StringBuilder sb = new StringBuilder();
+            boolean first = true;
+            for (Text id : values) {
+                if (first) {
+                    first = false;
+                } else {
+                    sb.append(" , ");
+                }
+                sb.append(id.toString());
+            }
+            result.set(sb.toString());
+            context.write(new Text("product id : "+key), new Text("users : "+result));
+        } catch (Exception e) {
+            System.out.println("Exception in Reducer Task: ");
+                    e.printStackTrace();
+        }
+    }
+}
+ 
+
+-------------------------------------
+Reviews per year
+
+
+Driver Class: DriverClass.java
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+
+import java.io.IOException;
+
+public class DriverClass {
+
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException {
+
+        Configuration conf = new Configuration();
+        FileSystem fs = FileSystem.get(conf);
+        Job job = Job.getInstance(conf, "Partitioning method by year");
+
+        job.setJarByClass(DriverClass.class);
+
+        job.setMapperClass(MapperClass.class);
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(Text.class);
+
+        //Custom Partitioner:
+        job.setPartitionerClass(YearPartitionerTuple.class);
+
+        job.setReducerClass(ReducerClass.class);
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(NullWritable.class);
+        job.setNumReduceTasks(14);
+
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
+        if (fs.exists(new Path(args[1]))) {
+            fs.delete(new Path(args[1]), true);
+        }
+
+        System.exit(job.waitForCompletion(true) ? 0 : 1);
+    }
+}
+
+
+Mapper Class: MapperClass.java
+
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Mapper;
+import java.io.IOException;
+
+public class MapperClass extends Mapper<LongWritable, Text, Text, Text> {
+
+    private Text inputRecord = new Text();
+    private Text year = new Text();
+
+    protected void map(LongWritable key, Text value, Mapper.Context context) throws IOException, InterruptedException{
+
+        if(key.get()==0){
+            return;
+        }
+
+        String[] line = value.toString().split("\\t");
+        String[] yearPart = line[14].split("-");
+        String yearVal = yearPart[2].trim();
+
+        year.set(yearVal);
+        inputRecord.set(value);
+
+        context.write(year, inputRecord);
+    }
+}
+
+Partitioner code: YearPartitionerTuple.java
+
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Partitioner;
+
+public class YearPartitionerTuple extends Partitioner<Text, Text> {
+    @Override
+    public int getPartition(Text key, Text value, int numPartitions){
+        int n=1;
+        if(numPartitions==0){
+            return 0;}
+        else if(key.equals(("99"))){
+            return n % numPartitions;}
+        else if(key.equals(new Text("00"))){
+            return 2 % numPartitions; }
+        else if(key.equals(new Text("01"))){
+            return 3 % numPartitions ; }
+        else if(key.equals(new Text("02"))){
+            return 4 % numPartitions;}
+        else if(key.equals(new Text("03"))){
+            return 5 % numPartitions; }
+        else if(key.equals(new Text("04"))){
+            return 6 % numPartitions; }
+        else if(key.equals(new Text("05"))){
+            return 7 % numPartitions; }
+        else if(key.equals(new Text("06"))){
+            return 8 % numPartitions;  }
+        else if(key.equals(new Text("07"))){
+            return 9 % numPartitions;}
+        else if(key.equals(new Text("08"))){
+            return 10 % numPartitions;  }
+        else if (key.equals(new Text("09"))){
+            return 11 % numPartitions;}
+        else if (key.equals(new Text("10"))){
+            return 12 % numPartitions; }
+        else if (key.equals(new Text("11"))){
+            return 13 % numPartitions; }
+        else
+        {return 14 % numPartitions; }
+    }
+}
+
+Reducer Class: ReducerClass.java
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Reducer;
+import java.io.IOException;
+
+public class ReducerClass extends Reducer<Text, Text, Text, NullWritable> {
+
+
+    protected void reduce(Text key, Iterable<Text> values, Reducer.Context context) throws IOException, InterruptedException{
+        for(Text t: values){
+
+            context.write(t, NullWritable.get());
+        }
+    }
+}
+
+------------------------------------------
+Most reviewed products.
+
+Driver Class: MostReviewDriver.java
+
+
+package src;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+import java.io.IOException;
+
+
+public class MostReviewDriver {
+    public static void main(String[] args) throws IOException {
+
+        Configuration conf = new Configuration();
+        FileSystem fs = FileSystem.get(conf);
+        try {
+            Job topNProductsJob = Job.getInstance(conf, "Top N products with most reviews.");
+            topNProductsJob.setJarByClass(MostReviewDriver.class);
+
+            int N = 10;
+            topNProductsJob.getConfiguration().setInt("N", N);
+            topNProductsJob.setInputFormatClass(TextInputFormat.class);
+            topNProductsJob.setOutputFormatClass(TextOutputFormat.class);
+
+            topNProductsJob.setMapperClass(MostReviewMapper.class);
+            topNProductsJob.setSortComparatorClass(CountComparator.class);
+            topNProductsJob.setReducerClass(MostReviewReducer.class);
+            topNProductsJob.setNumReduceTasks(1);
+
+            topNProductsJob.setMapOutputKeyClass(IntWritable.class);
+            topNProductsJob.setMapOutputValueClass(Text.class);
+            topNProductsJob.setOutputKeyClass(IntWritable.class);
+            topNProductsJob.setOutputValueClass(Text.class);
+
+            FileInputFormat.setInputPaths(topNProductsJob, new Path(args[0]));
+            FileOutputFormat.setOutputPath(topNProductsJob, new Path(args[1]));
+            if (fs.exists(new Path(args[1]))) {
+                fs.delete(new Path(args[1]), true); }
+            topNProductsJob.waitForCompletion(true);
+        } catch (Exception e) {
+            System.out.println("Exception in main class: ");
+            e.printStackTrace();
+
+        }
+    }
+}
+
+Mapper Class: MostReviewMapper.java
+package src;
+
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Mapper;
+
+public class MostReviewMapper extends Mapper<LongWritable, Text, IntWritable, Text> {
+
+    public void map(LongWritable key, Text value, Context context){
+
+        String[] row = value.toString().split("\\t");
+        String product_Id;
+        int count;
+        try {
+            product_Id = row[3].trim();
+            count = Integer.parseInt(row[9].trim());
+        }
+        catch (NumberFormatException e){
+            return;
+        }
+        try{
+            Text id = new Text(product_Id);
+            IntWritable productRating = new IntWritable(count);
+            context.write(productRating, id);
+
+        }catch(Exception e){
+            System.out.println("Exception in Mapper Task: ");
+            e.printStackTrace();
+        }
+    }
+}
+
+Comparator Code: CountComparator.java
+package src;
+
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.WritableComparable;
+import org.apache.hadoop.io.WritableComparator;
+
+public class CountComparator extends WritableComparator {
+
+    protected CountComparator() {
+
+        super(IntWritable.class,true);
+    }
+
+    public int compare(WritableComparable w1, WritableComparable w2) {
+        IntWritable cmp1 = (IntWritable) w1;
+        IntWritable cmp2 = (IntWritable) w2;
+
+        int result = cmp1.get() < cmp2.get() ? 1 : cmp1.get() == cmp2.get() ? 0 : -1;
+        return result;
+    }
+}
+
+
+Reducer Class: MostReviewReducer.java
+
+package src;
+
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Reducer;
+
+import java.io.IOException;
+
+public class  MostReviewReducer extends Reducer<IntWritable, Text, IntWritable, Text> {
+
+    int count = 0;
+    private int N = 10;
+
+    @Override
+    protected void setup(Context context) throws IOException, InterruptedException {
+        // default = 10
+        this.N = context.getConfiguration().getInt("N", 10);
+    }
+
+    @Override
+    public void reduce(IntWritable key, Iterable<Text> value, Context context)
+            throws IOException, InterruptedException{
+        try {
+            for(Text val: value){
+                if(count<N)
+                {
+                    context.write(key,new Text("ProductID: "+val));
+                }
+                count++;
+            }
+
+        } catch (Exception e) {
+            System.out.println("Exception in Reducer Task: ");
+            e.printStackTrace();
+        }
+    }
+}
+-------------------------------------------
+Records in each ratings.
+
+Driver Class: BinningByRatingDriverClass.java
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.mapreduce.lib.output.MultipleOutputs;
+import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+
+import java.io.IOException;
+
+
+public class BinningByRatingDriverClass {
+
+    public static void main(String[] args) throws IOException, InterruptedException, ClassNotFoundException {
+
+        Configuration conf = new Configuration();
+        FileSystem fs = FileSystem.get(conf);
+
+        try {
+
+            Job binningJob = Job.getInstance(conf, "Binning Pattern");
+            binningJob.setJarByClass(BinningByRatingDriverClass.class);
+
+            binningJob.setMapperClass(BinningRatingOfProductMapperClass.class);
+            binningJob.setMapOutputKeyClass(Text.class);
+            binningJob.setMapOutputValueClass(NullWritable.class);
+            binningJob.setNumReduceTasks(1);
+
+            FileInputFormat.setInputPaths(binningJob, new Path(args[0]));
+            FileOutputFormat.setOutputPath(binningJob, new Path(args[1]));
+            if (fs.exists(new Path(args[1]))) {
+                fs.delete(new Path(args[1]), true);
+            }
+
+            MultipleOutputs.addNamedOutput(binningJob, "bins", TextOutputFormat.class, Text.class, NullWritable.class);
+            MultipleOutputs.setCountersEnabled(binningJob, true);
+
+            System.exit(binningJob.waitForCompletion(true) ? 0 : 1);
+
+        } catch (Exception e ) {
+            System.out.println("Exception in  driver class: ");
+            e.printStackTrace();
+        }
+    }
+}
+
+Mapper Class: BinningRatingOfProductMapperClass.java
+
+
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.lib.output.MultipleOutputs;
+
+import java.io.IOException;
+
+public class BinningRatingOfProductMapperClass extends Mapper<LongWritable, Text, Text, NullWritable> {
+    private MultipleOutputs<Text, NullWritable> output = null;
+    @Override
+    protected void setup(Context context){
+        output = new MultipleOutputs(context);
+    }
+    @Override
+    protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException{
+        try {
+            if(key.get()==0) { return; }
+            String[] token = value.toString().split("\\t");
+            String rating = token[7].trim();
+            if(rating.equals("1")){
+                output.write("bins", value, NullWritable.get(), "RatingStar1"); }
+            if(rating.equals("2")){
+                output.write("bins", value, NullWritable.get(), "RatingStar2"); }
+            if(rating.equals("3")){
+                output.write("bins", value, NullWritable.get(), "RatingStar3"); }
+            if(rating.equals("4")){
+                output.write("bins", value, NullWritable.get(), "RatingStar4"); }
+            if(rating.equals("5")){
+                output.write("bins", value, NullWritable.get(), "RatingStar5"); }
+        } catch (Exception e) {
+            System.out.println("Exception in Mapper Task: ");
+            e.printStackTrace(); }
+    }
+    @Override
+    protected void cleanup(Context context) throws IOException, InterruptedException{
+        output.close();
+    }
+}
+
+--------------------------------------------------
+Apache Pig
+
+Count of reviews on daily basis for all products.
+
+reviewdata = LOAD 'hdfs:/datadump/amazon_reviews_us_Electronics_v1_00.tsv' AS (marketplace, customer_id, review_id, product_id, product_parent, product_title, product_category, star_rating, helpful_votes, total_votes, vine, verified_purchase, review_headline, review_body, review_date);
+
+groupeddata = GROUP reviewdata by review_date;
+
+daily_reviews_count = FOREACH groupeddata GENERATE group as review_date, COUNT(reviewdata.review_id) as count;
+
+order_by_of_data = ORDER daily_reviews_count BY count DESC;
+
+store order_by_of_data INTO 'hdfs:/pig_output/dailyReviews';
+
+----------------------------------------------------
+Total number of products per rating.
+
+reviewdata = LOAD 'hdfs:/datadump/amazon_reviews_us_Electronics_v1_00.tsv' AS (marketplace, customer_id, review_id, product_id, product_parent, product_title, product_category, star_rating, helpful_votes, total_votes, vine, verified_purchase, review_headline, review_body, review_date);
+
+groupeddataby = GROUP reviewdata by star_rating;
+
+productcnt_rating = FOREACH groupeddataby GENERATE group as star_rating, COUNT(reviewdata.product_id) as count;
+
+store productcnt_rating INTO '/pig_output/ProductsEachRating';
+
+
+----------------------------------------------------
+Apache Hive
+
+Loading data:
+
+CREATE TABLE IF NOT EXISTS amazonreviewdata (marketplace String, customer_id String, review_id String, product_id String, product_parent String, product_title String, product_category String, star_rating String, helpful_votes String, total_votes String, vine String, verified_purchase String, review_headline String, review_body String, review_date String) 
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY '\t'
+LINES TERMINATED BY '\n'
+STORED AS TEXTFILE tblproperties("skip.header.line.count" = "1");
+
+Load data inpath 'hdfs:/datadump/amazon_reviews_us_Electronics_v1_00.tsv' into table amazonreviewdata;
+
+-------------
+Find maximum and minimum rating verified product.
+
+INSERT OVERWRITE  DIRECTORY 'ElectronicsMaxMinHiveout.tsv' ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+SELECT product_id, Max(star_rating), Min (star_rating), SUM(helpful_votes) from amazonreviewdata where verified_purchase = 'Y' GROUP BY product_id ;
+
+
+---------------------------------------------------
+Total count of reviews.
+
+select count(*) from amazonreviewdata;
+
+--------------------------------------------------
+Total count of product id in category
+
+select product_category, count(distinct product_id) from amazonreviewdata group by product_category;
+
+---------------------------------------------------
+Count of reviews per product_id
+
+INSERT OVERWRITE  DIRECTORY 'productreviewcountHiveout.tsv' ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+select product_id, count(review_id) from amazonreviewdata group by product_id;
+
+---------------------------------------------------
+
+Tableau - Cannot add code here as I had used filters and in-built functionality to display the graph.
+
